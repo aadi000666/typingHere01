@@ -6,6 +6,15 @@ import { texts, getTitle, getLevel, calcXP, getXPProgress, getAllIndiaRank } fro
 import './index.css';
 
 const App = () => {
+  // Auth State
+  const [user, setUser] = useState(() => {
+    const saved = localStorage.getItem('currentUser');
+    return saved ? JSON.parse(saved) : null;
+  });
+  const [authMode, setAuthMode] = useState('login');
+  const [loginForm, setLoginForm] = useState({ username: '', password: '', remember: false });
+  const [error, setError] = useState('');
+
   // Game State
   const [currentText, setCurrentText] = useState("");
   const [userInput, setUserInput] = useState("");
@@ -21,23 +30,74 @@ const App = () => {
   // Stats State
   const [wpm, setWpm] = useState(0);
   const [accuracy, setAccuracy] = useState(100);
-  const [totalXP, setTotalXP] = useState(() => Number(localStorage.getItem('typingXP')) || 0);
-  const [bestWpm, setBestWpm] = useState(() => Number(localStorage.getItem('bestWpm')) || 0);
+  const [totalXP, setTotalXP] = useState(0);
+  const [bestWpm, setBestWpm] = useState(0);
   const [combo, setCombo] = useState(0);
   const [maxCombo, setMaxCombo] = useState(0);
+  const [highSpeedStreak, setHighSpeedStreak] = useState(0);
 
   const inputRef = useRef(null);
 
-  // Initialize
+  // Initialize User Session
   useEffect(() => {
-    resetGame();
-  }, []);
+    if (user) {
+      const userData = JSON.parse(localStorage.getItem(`user_${user.username}`)) || { xp: 0, best: 0, streak: 0 };
+      setTotalXP(userData.xp);
+      setBestWpm(userData.best);
+      setHighSpeedStreak(userData.streak || 0);
+      resetGame();
+    }
+  }, [user]);
 
-  // Persist Data
+  const handleLogout = () => {
+    localStorage.removeItem('currentUser');
+    setUser(null);
+  };
+
+  const handleAuthSubmit = (e) => {
+    e.preventDefault();
+    if (!loginForm.username || !loginForm.password) {
+      setError('Please fill in all fields');
+      return;
+    }
+
+    if (authMode === 'signup') {
+      const existing = localStorage.getItem(`user_${loginForm.username}`);
+      if (existing) {
+        setError('Username already exists');
+        return;
+      }
+      const newUser = { username: loginForm.username, password: loginForm.password };
+      localStorage.setItem(`user_${loginForm.username}`, JSON.stringify({ ...newUser, xp: 0, best: 0 }));
+      setUser(newUser);
+      if (loginForm.remember) localStorage.setItem('currentUser', JSON.stringify(newUser));
+    } else {
+      const stored = localStorage.getItem(`user_${loginForm.username}`);
+      if (!stored) {
+        setError('User not found');
+        return;
+      }
+      const parsed = JSON.parse(stored);
+      if (parsed.password !== loginForm.password) {
+        setError('Incorrect password');
+        return;
+      }
+      setUser(parsed);
+      if (loginForm.remember) localStorage.setItem('currentUser', JSON.stringify(parsed));
+    }
+    setError('');
+  };
+
+  // Persist User Data
   useEffect(() => {
-    localStorage.setItem('typingXP', totalXP);
-    localStorage.setItem('bestWpm', bestWpm);
-  }, [totalXP, bestWpm]);
+    if (user) {
+      const data = { xp: totalXP, best: bestWpm, streak: highSpeedStreak, username: user.username, password: user.password };
+      localStorage.setItem(`user_${user.username}`, JSON.stringify(data));
+      if (localStorage.getItem('currentUser')) {
+        localStorage.setItem('currentUser', JSON.stringify(user));
+      }
+    }
+  }, [totalXP, bestWpm, highSpeedStreak, user]);
 
   // Timer logic
   useEffect(() => {
@@ -55,7 +115,7 @@ const App = () => {
       }, 1000);
     }
     return () => clearInterval(interval);
-  }, [startTime, isFinished, timeLeft, wpm, accuracy]); // Added wpm, accuracy to trigger finish on change in finishGame if needed
+  }, [startTime, isFinished]);
 
   const finishGame = () => {
     setIsFinished(true);
@@ -67,7 +127,18 @@ const App = () => {
       triggerLevelUpCelebration(); // Confetti for personal best
     }
 
-    const earnedXP = calcXP(wpm, accuracy);
+    // Milestone Check: 32 WPM x 3 times
+    let streakBonus = 0;
+    if (wpm >= 32) {
+      const newStreak = highSpeedStreak + 1;
+      setHighSpeedStreak(newStreak);
+      if (newStreak % 3 === 0) {
+        streakBonus = 500; // Level-up bonus
+        triggerLevelUpCelebration();
+      }
+    }
+
+    const earnedXP = calcXP(wpm, accuracy) + streakBonus;
     setTotalXP(prev => {
       const newXP = prev + earnedXP;
       if (getLevel(newXP) > getLevel(prev)) {
@@ -86,7 +157,7 @@ const App = () => {
     setIsFinished(false);
     setWpm(0);
     setAccuracy(100);
-    setTimeLeft(30); // 30 seconds sprint
+    setTimeLeft(60); // 1 minute challenge
     setTotalWords(0);
     setSessionCorrectChars(0);
     setSessionTypedChars(0);
@@ -105,9 +176,16 @@ const App = () => {
 
     setUserInput(value);
 
-    // Calculate real-time stats
-    const currentWords = value.trim().split(/\s+/).filter(w => w !== "").length;
-    const sessionWords = totalWords + currentWords;
+    // Filter only correctly typed words
+    const userWords = value.trim().split(/\s+/).filter(w => w !== "");
+    const targetWords = currentText.trim().split(/\s+/);
+    let correctCount = 0;
+    userWords.forEach((word, i) => {
+      if (word === targetWords[i]) correctCount++;
+    });
+
+    // Calculate real-time stats (only counting correct words)
+    const sessionWords = totalWords + correctCount;
     const now = Date.now();
     const effectiveStartTime = startTime || now;
     const timeElapsed = (now - effectiveStartTime) / 1000 / 60; // minutes
@@ -138,7 +216,7 @@ const App = () => {
 
     // Auto-next task check
     if (value.length >= currentText.length) {
-      setTotalWords(prev => prev + currentWords);
+      setTotalWords(prev => prev + correctCount);
       setSessionCorrectChars(prev => prev + currentCorrect);
       setSessionTypedChars(prev => prev + value.length);
       const nextText = texts[Math.floor(Math.random() * texts.length)];
@@ -161,12 +239,101 @@ const App = () => {
   const title = getTitle(wpm);
   const airRank = getAllIndiaRank(wpm);
 
+  if (!user) {
+    return (
+      <div className="login-container">
+        <motion.div 
+          initial={{ scale: 0.9, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="glass-panel login-card"
+        >
+          <header style={{ textAlign: 'center', marginBottom: '2rem' }}>
+            <h1 className="title-gradient" style={{ fontSize: '2.5rem' }}>HELP TO TYPE</h1>
+            <p style={{ color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+              {authMode === 'login' ? 'Welcome back! Sign in to continue.' : 'Join the elite typist community!'}
+            </p>
+          </header>
+
+          <form onSubmit={handleAuthSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem' }}>
+            <div className="form-group">
+              <label>Choose Username</label>
+              <input 
+                type="text" 
+                value={loginForm.username} 
+                onChange={(e) => setLoginForm({ ...loginForm, username: e.target.value })}
+                placeholder="Username (e.g. typing_pro)"
+                className="custom-input"
+              />
+            </div>
+            <div className="form-group">
+              <label>{authMode === 'login' ? 'Password' : 'Set Password'}</label>
+              <input 
+                type="password" 
+                value={loginForm.password} 
+                onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                placeholder="••••••••"
+                className="custom-input"
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+              <input 
+                type="checkbox" 
+                checked={loginForm.remember} 
+                onChange={(e) => setLoginForm({ ...loginForm, remember: e.target.checked })}
+                id="remember"
+              />
+              <label htmlFor="remember" style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Keep me logged in</label>
+            </div>
+            
+            {error && <p style={{ color: 'var(--accent)', fontSize: '0.9rem', textAlign: 'center' }}>{error}</p>}
+            
+            <button className="btn-primary" type="submit" style={{ fontSize: '1.1rem', padding: '16px' }}>
+              {authMode === 'login' ? 'Proceed to Type' : 'Create My Account'}
+            </button>
+          </form>
+
+          <div style={{ borderTop: '1px solid var(--glass-border)', marginTop: '2rem', paddingTop: '1.5rem', textAlign: 'center' }}>
+            <p style={{ color: 'var(--text-muted)', marginBottom: '1rem', fontSize: '0.9rem' }}>
+              {authMode === 'login' ? "First time here?" : "Already have an account?"}
+            </p>
+            <button 
+              onClick={() => { setAuthMode(authMode === 'login' ? 'signup' : 'login'); setError(''); }}
+              className="btn-secondary"
+              style={{ 
+                background: 'rgba(255, 255, 255, 0.05)', 
+                border: '1px solid var(--glass-border)', 
+                color: 'white',
+                padding: '10px 20px',
+                borderRadius: '8px',
+                width: '100%',
+                fontWeight: '600',
+                cursor: 'pointer'
+              }}
+            >
+              {authMode === 'login' ? 'Sign Up for Free' : 'Back to Login'}
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <motion.div 
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className="main-container"
     >
+      <div style={{ position: 'absolute', top: '1.5rem', right: '1.5rem', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontWeight: '600', color: 'var(--text-main)' }}>{user.username}</div>
+          <button onClick={handleLogout} style={{ color: 'var(--accent)', background: 'none', border: 'none', fontSize: '0.8rem', cursor: 'pointer' }}>Logout</button>
+        </div>
+        <div style={{ width: '40px', height: '40px', background: 'var(--primary)', borderRadius: '50%', display: 'flex', justifyContent: 'center', alignItems: 'center', fontWeight: 'bold' }}>
+          {user.username[0].toUpperCase()}
+        </div>
+      </div>
+
       <header style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
         <motion.h1 
           className="title-gradient"
@@ -177,15 +344,17 @@ const App = () => {
           HELP TO TYPE
         </motion.h1>
         <p style={{ color: 'var(--text-muted)', fontSize: '1.2rem' }}>
-          30 Second Sprint • Real-time Ranking • Combo Multipliers
+          1 Minute Marathon • Only Correct Words Count
         </p>
       </header>
 
+
       <div className="stats-grid">
         <StatCard icon={<Timer size={20} />} label="Remaining" value={timeLeft + "s"} color={timeLeft < 10 ? "var(--accent)" : "var(--primary)"} />
-        <StatCard icon={<Zap size={20} />} label="All India Rank" value={airRank} color="var(--secondary)" />
+        <StatCard icon={<Zap size={20} />} label="AIR Rank" value={airRank} color="var(--secondary)" />
         <StatCard icon={<TrendingUp size={20} />} label="WPM" value={wpm} color="var(--success)" />
-        <StatCard icon={<Award size={20} />} label="Best WPM" value={bestWpm} color="var(--warning)" />
+        <StatCard icon={<Target size={20} />} label="Accuracy" value={accuracy + "%"} color="var(--warning)" />
+        <StatCard icon={<Award size={20} />} label="Max Combo" value={maxCombo} color="var(--accent)" />
       </div>
 
       <div className="glass-panel" style={{ padding: '2.5rem', marginBottom: '2rem', minHeight: '300px', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -263,16 +432,31 @@ const App = () => {
             animate={{ scale: 1, opacity: 1 }}
             style={{ textAlign: 'center' }}
           >
-            <h2 style={{ color: 'var(--success)', marginBottom: '0.5rem', fontSize: '2rem' }}>CONGRATULATIONS!</h2>
+            {wpm >= 32 && highSpeedStreak > 0 && highSpeedStreak % 3 === 0 && (
+              <motion.div 
+                initial={{ y: 20, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                style={{ color: 'var(--secondary)', fontWeight: '700', marginBottom: '1rem' }}
+              >
+                🔥 MASTERY BONUS: 3rd Time at 32+ WPM! LVL UP!
+              </motion.div>
+            )}
+            {wpm >= 30 ? (
+              <h2 style={{ color: 'var(--success)', marginBottom: '0.5rem', fontSize: '2.5rem' }}>FANTASTIC!</h2>
+            ) : (
+              <h2 style={{ color: 'var(--warning)', marginBottom: '0.5rem', fontSize: '2rem' }}>GOOD EFFORT!</h2>
+            )}
             <div style={{ marginBottom: '1.5rem', fontSize: '1.2rem', color: 'var(--text-muted)' }}>
-              Completed under 30 seconds with <strong>{wpm} WPM</strong>
+              You typed <strong>{totalWords} perfect words</strong> • Streak: {highSpeedStreak}
             </div>
-            <p style={{ color: 'var(--primary)', fontWeight: 'bold', marginBottom: '1.5rem', fontSize: '1.4rem' }}>
-              All India Rank: {airRank}
+            <p style={{ color: 'var(--primary)', fontWeight: 'bold', marginBottom: '1.5rem', fontSize: '1.6rem' }}>
+              Final Speed: {wpm} WPM | AIR Rank: {airRank}
             </p>
-            <button className="btn-primary" onClick={resetGame} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', margin: '0 auto' }}>
-              <RotateCcw size={18} /> Experience Again
-            </button>
+            <div style={{ display: 'flex', gap: '1rem', justifyContent: 'center' }}>
+              <button className="btn-primary" onClick={resetGame} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <RotateCcw size={18} /> Experience Again
+              </button>
+            </div>
           </motion.div>
         )}
       </div>
